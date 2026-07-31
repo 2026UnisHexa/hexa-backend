@@ -1,5 +1,6 @@
 import os
 from math import isfinite
+from mimetypes import guess_type
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,7 +12,6 @@ from supabase import Client, create_client
 
 BUCKET_NAME = os.getenv("SUPABASE_AUDIO_BUCKET")
 MAX_AUDIO_SIZE = 50 * 1024 * 1024
-ALLOWED_CONTENT_TYPES = {"audio/wav", "audio/wave", "audio/x-wav"}
 
 
 def _storage_client() -> Client:
@@ -50,25 +50,30 @@ async def upload_audio(
         raise HTTPException(status_code=400, detail="장르는 100자 이하여야 합니다.")
     if not isfinite(price) or price < 0:
         raise HTTPException(status_code=400, detail="가격은 0 이상이어야 합니다.")
-    filename = Path(file.filename or "audio.wav").name
-    if Path(filename).suffix.lower() != ".wav":
-        raise HTTPException(status_code=400, detail="WAV 파일만 업로드할 수 있습니다.")
-    if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(status_code=400, detail="WAV 파일 형식이 아닙니다.")
+    filename = Path(file.filename or "audio").name
+    guessed_content_type = guess_type(filename)[0]
+    content_type = (
+        file.content_type
+        if file.content_type and file.content_type.startswith("audio/")
+        else guessed_content_type
+    )
+    if not content_type or not content_type.startswith("audio/"):
+        raise HTTPException(status_code=400, detail="오디오 파일만 업로드할 수 있습니다.")
 
     contents = await file.read(MAX_AUDIO_SIZE + 1)
     if len(contents) > MAX_AUDIO_SIZE:
         raise HTTPException(status_code=413, detail="파일 크기는 50MB 이하여야 합니다.")
-    if len(contents) < 12 or contents[:4] != b"RIFF" or contents[8:12] != b"WAVE":
-        raise HTTPException(status_code=400, detail="올바른 WAV 파일이 아닙니다.")
+    if not contents:
+        raise HTTPException(status_code=400, detail="빈 파일은 업로드할 수 없습니다.")
 
     audio_id = uuid4()
-    storage_path = f"{login_id}/{audio_id}.wav"
+    extension = Path(filename).suffix.lower()
+    storage_path = f"{login_id}/{audio_id}{extension}"
     try:
         _storage_client().storage.from_(BUCKET_NAME).upload(
             path=storage_path,
             file=contents,
-            file_options={"content-type": "audio/wav", "upsert": "false"},
+            file_options={"content-type": content_type, "upsert": "false"},
         )
         row = db.execute(
             text(
@@ -121,7 +126,7 @@ def list_audio(db: Session, login_id: str) -> list[dict]:
     return [_serialize(row) for row in rows]
 
 
-def download_audio(db: Session, login_id: str, audio_id: str) -> tuple[bytes, str]:
+def download_audio(db: Session, login_id: str, audio_id: str) -> tuple[bytes, str, str]:
     row = db.execute(
         text(
             """
@@ -135,7 +140,9 @@ def download_audio(db: Session, login_id: str, audio_id: str) -> tuple[bytes, st
     if row is None:
         raise HTTPException(status_code=404, detail="음원 파일이 없습니다.")
     data = _storage_client().storage.from_(BUCKET_NAME).download(row["storage_path"])
-    return data, row["original_filename"]
+    filename = row["original_filename"]
+    content_type = guess_type(filename)[0] or "application/octet-stream"
+    return data, filename, content_type
 
 
 def delete_audio(db: Session, login_id: str, audio_id: str) -> None:

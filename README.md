@@ -17,7 +17,7 @@ SUPABASE_AUDIO_BUCKET=audio-files
 JWT를 사용하지 않는 데모 구조이므로 API는 `login_id`를 사용자 식별값으로
 신뢰합니다.
 
-### WAV 업로드
+### 음원 업로드
 
 ```bash
 curl -X POST http://127.0.0.1:8000/audio \
@@ -25,7 +25,7 @@ curl -X POST http://127.0.0.1:8000/audio \
   -F "title=봄날" \
   -F "price=1500" \
   -F "genreLabel=발라드" \
-  -F "audioFile=@sample.wav;type=audio/wav"
+  -F "audioFile=@sample.mp3;type=audio/mpeg"
 ```
 
 `genreLabel`은 선택 항목이며, `created_at`은 업로드 시 DB가 자동으로 기록합니다.

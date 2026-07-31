@@ -98,10 +98,10 @@ def get_audio(
     login_id: str = Depends(get_current_login_id),
     db: Session = Depends(get_db),
 ):
-    contents, filename = download_audio(db, login_id, audio_id)
+    contents, filename, content_type = download_audio(db, login_id, audio_id)
     return Response(
         content=contents,
-        media_type="audio/wav",
+        media_type=content_type,
         headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}"},
     )
 
