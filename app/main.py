@@ -1,7 +1,9 @@
+import os
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -11,27 +13,60 @@ from app.audio_service import (
     delete_audio,
     download_audio,
     list_audio,
+    update_audio_price,
     upload_audio,
 )
 from app.database import get_db
 from app.jwt_service import create_access_token, get_current_login_id
-from app.schemas import AudioFileResponse, LoginRequest, LoginResponse, SignupRequest, SignupResponse
+from app.schemas import (
+    AudioFilePriceResponse,
+    AudioFileResponse,
+    LoginRequest,
+    LoginResponse,
+    PriceUpdateRequest,
+    SignupRequest,
+    SignupResponse,
+)
 
 
 app = FastAPI(title="Hexa Backend")
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+def _cors_origins() -> list[str]:
+    defaults = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://hexa-ten.vercel.app"
-    ],
+        "https://hexa-ten.vercel.app",
+    ]
+    extra = os.getenv("CORS_ORIGINS", "")
+    for origin in extra.split(","):
+        cleaned = origin.strip().rstrip("/")
+        if cleaned and cleaned not in defaults:
+            defaults.append(cleaned)
+    return defaults
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(_request: Request, exc: Exception):
+    """
+    Starlette's ServerErrorMiddleware sits outside CORSMiddleware, so bare
+    unhandled exceptions become plain-text 500s with no ACAO header (browser
+    reports a misleading CORS error). Return JSON from ExceptionMiddleware
+    instead so CORS headers are still applied.
+    """
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {exc}"},
+    )
 
 
 @app.get("/")
@@ -76,11 +111,24 @@ async def create_audio(
     title: str = Form(...),
     price: float = Form(...),
     genreLabel: str | None = Form(None),
+    chordLabel: str | None = Form(None),
+    tempoBpm: int | None = Form(None),
+    noteCount: int | None = Form(None),
     audioFile: UploadFile = File(...),
     login_id: str = Depends(get_current_login_id),
     db: Session = Depends(get_db),
 ):
-    audio = await upload_audio(db, login_id, title, price, genreLabel, audioFile)
+    audio = await upload_audio(
+        db,
+        login_id,
+        title,
+        price,
+        genreLabel,
+        audioFile,
+        chord_label=chordLabel,
+        tempo_bpm=tempoBpm,
+        note_count=noteCount,
+    )
     return _with_audio_url(audio)
 
 
@@ -114,6 +162,24 @@ def remove_audio(
 ):
     delete_audio(db, login_id, audio_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.patch("/audio-files/{id}", response_model=AudioFilePriceResponse)
+def patch_audio_price(
+    id: str,
+    request: PriceUpdateRequest,
+    login_id: str = Depends(get_current_login_id),
+    db: Session = Depends(get_db),
+):
+    audio = update_audio_price(db, login_id, id, request.price)
+    return AudioFilePriceResponse(
+        id=audio["id"],
+        login_id=audio["loginId"],
+        title=audio["title"],
+        price=audio["price"],
+        genre_label=audio["genreLabel"],
+        created_at=audio["createdAt"],
+    )
 
 
 def _with_audio_url(audio: dict) -> dict:
