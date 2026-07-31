@@ -2,20 +2,32 @@ import os
 from math import isfinite
 from mimetypes import guess_type
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from supabase import Client, create_client
 
 load_dotenv()
 
 MAX_AUDIO_SIZE = 50 * 1024 * 1024
 
 # MediaRecorder / browsers often send video/webm or audio/webm;codecs=opus
-_AUDIO_EXTENSIONS = {".webm", ".weba", ".ogg", ".oga", ".wav", ".mp3", ".m4a", ".mp4", ".aac", ".flac"}
+_AUDIO_EXTENSIONS = {
+    ".webm",
+    ".weba",
+    ".ogg",
+    ".oga",
+    ".wav",
+    ".mp3",
+    ".m4a",
+    ".mp4",
+    ".aac",
+    ".flac",
+}
 
 
 def _bucket_name() -> str:
@@ -28,15 +40,137 @@ def _bucket_name() -> str:
     return name
 
 
-def _storage_client() -> Client:
-    url = os.getenv("SUPABASE_URL")
-    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not service_role_key:
+def _supabase_url() -> str:
+    url = (os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
+    if not url:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="서버 설정 오류: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY가 없습니다.",
+            detail="서버 설정 오류: SUPABASE_URL이 없습니다.",
         )
-    return create_client(url, service_role_key)
+    return url
+
+
+def _service_role_key() -> str:
+    key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="서버 설정 오류: SUPABASE_SERVICE_ROLE_KEY가 없습니다.",
+        )
+    return key
+
+
+def _storage_headers(*, content_type: str | None = None, upsert: bool | None = None) -> dict[str, str]:
+    key = _service_role_key()
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "apikey": key,
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+    if upsert is not None:
+        headers["x-upsert"] = "true" if upsert else "false"
+    return headers
+
+
+def _storage_error_detail(res: httpx.Response) -> str:
+    body = (res.text or "").strip()
+    if len(body) > 500:
+        body = body[:500] + "…"
+    return f"storage {res.status_code}" + (f": {body}" if body else "")
+
+
+def _upload_object(storage_path: str, contents: bytes, content_type: str) -> None:
+    """Upload via Storage REST to avoid supabase-py mangling error responses."""
+    encoded = quote(storage_path, safe="/")
+    url = f"{_supabase_url()}/storage/v1/object/{_bucket_name()}/{encoded}"
+    try:
+        res = httpx.post(
+            url,
+            content=contents,
+            headers=_storage_headers(content_type=content_type, upsert=False),
+            timeout=60.0,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"음원 업로드 실패: storage 연결 오류 ({exc})",
+        ) from exc
+    if res.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"음원 업로드 실패: {_storage_error_detail(res)}",
+        )
+
+
+def _download_object(storage_path: str) -> bytes:
+    encoded = quote(storage_path, safe="/")
+    url = f"{_supabase_url()}/storage/v1/object/{_bucket_name()}/{encoded}"
+    try:
+        res = httpx.get(url, headers=_storage_headers(), timeout=60.0)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"음원 다운로드 실패: storage 연결 오류 ({exc})",
+        ) from exc
+    if res.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"음원 다운로드 실패: {_storage_error_detail(res)}",
+        )
+    return res.content
+
+
+def _remove_object(storage_path: str) -> None:
+    url = f"{_supabase_url()}/storage/v1/object/{_bucket_name()}"
+    try:
+        httpx.request(
+            "DELETE",
+            url,
+            headers={**_storage_headers(), "Content-Type": "application/json"},
+            json={"prefixes": [storage_path]},
+            timeout=30.0,
+        )
+    except httpx.HTTPError:
+        pass
+
+
+def _create_signed_url(storage_path: str, expires_in: int = 3600) -> str:
+    encoded = quote(storage_path, safe="/")
+    url = f"{_supabase_url()}/storage/v1/object/sign/{_bucket_name()}/{encoded}"
+    try:
+        res = httpx.post(
+            url,
+            headers={**_storage_headers(), "Content-Type": "application/json"},
+            json={"expiresIn": expires_in},
+            timeout=30.0,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"음원 재생 URL 생성 실패: storage 연결 오류 ({exc})",
+        ) from exc
+    if res.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"음원 재생 URL 생성 실패: {_storage_error_detail(res)}",
+        )
+    try:
+        data = res.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="음원 재생 URL 생성 실패: 잘못된 응답",
+        ) from exc
+    signed = data.get("signedURL") or data.get("signedUrl")
+    if not isinstance(signed, str) or not signed:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="음원 재생 URL을 생성하지 못했습니다.",
+        )
+    if signed.startswith("http://") or signed.startswith("https://"):
+        return signed
+    return f"{_supabase_url()}/storage/v1{signed}"
 
 
 def _normalize_audio_content_type(
@@ -142,12 +276,7 @@ async def upload_audio(
         extension = ".webm"
     storage_path = f"{login_id}/{audio_id}{extension}"
     try:
-        storage = _storage_client().storage.from_(_bucket_name())
-        storage.upload(
-            path=storage_path,
-            file=contents,
-            file_options={"content-type": content_type, "upsert": "false"},
-        )
+        _upload_object(storage_path, contents, content_type)
         row = db.execute(
             text(
                 """
@@ -180,17 +309,11 @@ async def upload_audio(
         db.commit()
     except HTTPException:
         db.rollback()
-        try:
-            _storage_client().storage.from_(_bucket_name()).remove([storage_path])
-        except Exception:
-            pass
+        _remove_object(storage_path)
         raise
     except Exception as exc:
         db.rollback()
-        try:
-            _storage_client().storage.from_(_bucket_name()).remove([storage_path])
-        except Exception:
-            pass
+        _remove_object(storage_path)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"음원 업로드 실패: {exc}",
@@ -228,7 +351,7 @@ def download_audio(db: Session, login_id: str, audio_id: str) -> tuple[bytes, st
     ).mappings().one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="음원 파일이 없습니다.")
-    data = _storage_client().storage.from_(_bucket_name()).download(row["storage_path"])
+    data = _download_object(row["storage_path"])
     filename = row["original_filename"]
     content_type = guess_type(filename)[0] or "application/octet-stream"
     return data, filename, content_type
@@ -254,12 +377,7 @@ def delete_audio(db: Session, login_id: str, audio_id: str) -> None:
         {"id": audio_id, "login_id": login_id},
     )
     db.commit()
-
-    try:
-        _storage_client().storage.from_(_bucket_name()).remove([storage_path])
-    except Exception:
-        # Orphan file in storage is preferable to a broken DB row.
-        pass
+    _remove_object(storage_path)
 
 
 def update_audio_price(
@@ -332,31 +450,4 @@ def _serialize(row) -> dict:
 
 
 def create_audio_url(storage_path: str) -> str:
-    try:
-        response = (
-            _storage_client()
-            .storage.from_(_bucket_name())
-            .create_signed_url(storage_path, 3600)
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"음원 재생 URL 생성 실패: {exc}",
-        ) from exc
-
-    signed_url = None
-    if isinstance(response, dict):
-        signed_url = (
-            response.get("signedUrl")
-            or response.get("signedURL")
-            or (response.get("data") or {}).get("signedUrl")
-            or (response.get("data") or {}).get("signedURL")
-        )
-    if not signed_url:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="음원 재생 URL을 생성하지 못했습니다.",
-        )
-    return signed_url
+    return _create_signed_url(storage_path, 3600)
