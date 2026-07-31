@@ -66,8 +66,8 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     return LoginResponse(
         success=True,
         message="로그인 성공",
-        loginId=request.login_id,
-        accessToken=create_access_token(request.login_id),
+        login_id=request.login_id,
+        access_token=create_access_token(request.login_id),
     )
 
 
