@@ -22,9 +22,9 @@ class SignupResponse(BaseModel):
 class LoginResponse(BaseModel):
     success: bool
     message: str
-    loginId: str
-    accessToken: str
-    tokenType: str = "bearer"
+    login_id: str
+    access_token: str
+    token_type: str = "bearer"
 
 
 class AudioFileResponse(BaseModel):
