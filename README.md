@@ -8,7 +8,7 @@
 ```bash
 source venv/bin/activate
 pip install -r requirements.txt
-uvicorn main:app --reload
+uvicorn app.main:app --reload
 ```
 
 서버 확인: <http://127.0.0.1:8000/>
@@ -40,7 +40,7 @@ curl -X POST http://127.0.0.1:8000/login \
 `.env`에 실제 Supabase 연결 문자열을 입력한 다음 실행합니다.
 
 ```bash
-python seed_users.py
+python -m scripts.seed_users
 ```
 
 `hexa01`부터 `hexa05`까지 생성되며 비밀번호는 각각 `test01`부터

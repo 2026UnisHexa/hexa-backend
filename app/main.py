@@ -2,9 +2,9 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from auth_service import authenticate_user, create_user
-from database import get_db
-from schemas import AuthResponse, LoginRequest, SignupRequest
+from app.auth_service import authenticate_user, create_user
+from app.database import get_db
+from app.schemas import AuthResponse, LoginRequest, SignupRequest
 
 
 app = FastAPI(title="Hexa Backend")
@@ -44,5 +44,4 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         message="로그인 성공",
         login_id=request.login_id,
     )
-
 
