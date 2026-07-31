@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from supabase import Client, create_client
 
 
-BUCKET_NAME = os.getenv("SUPABASE_AUDIO_BUCKET", "audio-files")
+BUCKET_NAME = os.getenv("SUPABASE_AUDIO_BUCKET")
 MAX_AUDIO_SIZE = 50 * 1024 * 1024
 ALLOWED_CONTENT_TYPES = {"audio/wav", "audio/wave", "audio/x-wav"}
 
