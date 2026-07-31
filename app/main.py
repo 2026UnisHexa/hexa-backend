@@ -1,4 +1,5 @@
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -8,6 +9,18 @@ from app.schemas import AuthResponse, LoginRequest, SignupRequest
 
 
 app = FastAPI(title="Hexa Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://hexa-ten.vercel.app/"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
@@ -44,4 +57,3 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         message="로그인 성공",
         login_id=request.login_id,
     )
-
