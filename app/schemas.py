@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -11,7 +13,25 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
-class AuthResponse(BaseModel):
+class SignupResponse(BaseModel):
     success: bool
     message: str
     login_id: str
+
+
+class LoginResponse(BaseModel):
+    success: bool
+    message: str
+    loginId: str
+    accessToken: str
+    tokenType: str = "bearer"
+
+
+class AudioFileResponse(BaseModel):
+    id: str
+    loginId: str
+    title: str
+    price: float
+    genreLabel: str | None
+    audioFile: str
+    createdAt: datetime
